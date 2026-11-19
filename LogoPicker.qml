@@ -36,6 +36,11 @@ PopupCard {
     chooser.running = true
   }
 
+  property Timer forgetReopen: Timer {
+    interval: 3000
+    onTriggered: if (panel.service) panel.service.reopenLater("")
+  }
+
   function resize(percent) {
     if (percent === size || chooser.running) return
     message = ""
@@ -54,6 +59,9 @@ PopupCard {
     onExited: function(code) {
       if (code !== 0 && panel.service) panel.service.reopenLater("")
       if (code === 0 && !keepOpen) panel.open = false
+      // The bar rebuilds after a real change (and this picker with it). If it did not, nothing
+      // may stay queued to pop the picker open on some later rebuild.
+      if (keepOpen) forgetReopen.restart()
       keepOpen = false
     }
   }

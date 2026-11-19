@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "blackcode.omadistro",
   "name": "OmaDistro",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "BlackCode",
   "license": "MIT",
   "description": "OmaDistro: change the logo of Omarchy's menu icon, top-left on the bar. 44 logos in their official colors, picked from a panel (right-click the logo) or with one command. The menu itself stays Omarchy's own; sets itself up when enabled",

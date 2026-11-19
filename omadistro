@@ -9,9 +9,12 @@
   omadistro unswap [shell.json]     put Omarchy's own menu widget back, in the same place
 
 The menu's own settings move to shell.json's plugins[] entry for omarchy.menu, where Omarchy
-keeps the settings of a widget that is not in the layout. Every write is atomic and keeps a
-timestamped copy of the previous file next to it."""
+keeps the settings of a widget that is not in the layout (unswap moves them back). Every write
+is atomic, follows a symlinked shell.json, is locked against a second omadistro, and is
+re-checked just before it lands. The first file it ever changes is kept as
+shell.json.omadistro-original, plus the last 3 previous versions as shell.json.omadistro-<time>."""
 import fcntl
+import glob
 import json
 import os
 import sys
@@ -23,7 +26,7 @@ MENU = "omarchy.menu"
 DEFAULT_LOGO = "Omarchy"
 SIZE_MIN, SIZE_MAX, SIZE_DEFAULT = 60, 150, 100
 DEFAULT = os.path.expanduser("~/.config/omarchy/shell.json")
-SECTIONS = ("left", "center", "right")
+KEEP_BACKUPS = 3
 
 # Same order as Logos.js (tests/test_omadistro.py keeps the two in step).
 LOGOS = [
@@ -41,13 +44,11 @@ def fail(message):
     sys.exit(1)
 
 
-def read_config(path):
+def parse(raw, path):
     try:
-        with open(path, "rb") as f:
-            raw = f.read()
         config = json.loads(raw)
-    except (OSError, ValueError) as e:
-        fail(f"cannot read {path}: {e}")
+    except ValueError as e:
+        fail(f"cannot read {path}: {e} (comments in shell.json are not supported); nothing was changed")
     if not isinstance(config, dict):
         fail("shell.json must hold a JSON object; nothing was changed")
     bar = config.get("bar")
@@ -55,12 +56,21 @@ def read_config(path):
         layout = bar["layout"]
         if not isinstance(layout, dict):
             fail("bar.layout must be an object; nothing was changed")
-        for section in SECTIONS:
-            if section in layout and not isinstance(layout[section], list):
-                fail(f"bar.layout.{section} must be a list; nothing was changed")
+        for name, value in layout.items():
+            if not isinstance(value, list):
+                fail(f"bar.layout.{name} must be a list; nothing was changed")
     if "plugins" in config and not isinstance(config["plugins"], list):
         fail("plugins must be a list; nothing was changed")
-    return raw, config
+    return config
+
+
+def read_config(path):
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError as e:
+        fail(f"cannot read {path}: {e}")
+    return raw, parse(raw, path)
 
 
 def write_atomic(path, data, mode):
@@ -76,40 +86,78 @@ def write_atomic(path, data, mode):
         raise
 
 
-def save(path, raw, config):
-    """Write `config`, after keeping the previous file as shell.json.omadistro-<time>."""
-    text = (json.dumps(config, indent=2) + "\n").encode()
-    if text == raw:
-        return False
-    mode = os.stat(path).st_mode & 0o777
-    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+def keep_backups(path, raw, mode):
+    """The first file ever changed is kept for good; of the rest only the newest few stay."""
+    original = path + ".omadistro-original"
+    stamped = sorted(glob.glob(path + ".omadistro-2*"))
+    if not os.path.exists(original):
+        if stamped:
+            os.replace(stamped.pop(0), original)  # an older version of this plugin made these
+        else:
+            write_atomic(original, raw, mode)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime()) + f"-{time.time_ns() % 1000000:06d}"
     write_atomic(f"{path}.omadistro-{stamp}", raw, mode)
-    write_atomic(path, text, mode)
-    return True
+    stamped = sorted(glob.glob(path + ".omadistro-2*"))
+    for old in stamped[:-KEEP_BACKUPS]:
+        try:
+            os.unlink(old)
+        except OSError:
+            pass
 
 
-def entries_of(config, section):
-    layout = config.get("bar", {}).get("layout", {}) if isinstance(config.get("bar"), dict) else {}
-    value = layout.get(section)
-    return value if isinstance(value, list) else None
+def modify(path, change, attempts=3):
+    """Run `change(config)` on shell.json and write the result. `change` returns the new config,
+    or None when there is nothing to do. The write is locked against another omadistro and
+    re-checked: if the file changed between the read and the write (Omarchy saving, a second
+    monitor), the change is redone on the new content. Returns True if the file was written."""
+    path = os.path.realpath(path)
+    folder = os.environ.get("XDG_RUNTIME_DIR") or os.path.dirname(path)
+    with open(os.path.join(folder, "omadistro.lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for _ in range(attempts):
+            raw, config = read_config(path)
+            updated = change(config)
+            if updated is None:
+                return False
+            text = (json.dumps(updated, indent=2, ensure_ascii=False) + "\n").encode()
+            if text == raw:
+                return False
+            mode = os.stat(path).st_mode & 0o777
+            with open(path, "rb") as f:
+                if f.read() != raw:
+                    continue  # changed under us: read again
+            keep_backups(path, raw, mode)
+            write_atomic(path, text, mode)
+            return True
+    fail("shell.json keeps changing; nothing was changed, try again")
+
+
+def layout_of(config):
+    bar = config.get("bar")
+    layout = bar.get("layout") if isinstance(bar, dict) else None
+    return layout if isinstance(layout, dict) else {}
 
 
 def find_entry(config, widget_id):
-    for section in SECTIONS:
-        entries = entries_of(config, section)
-        for i, entry in enumerate(entries or []):
-            if isinstance(entry, dict) and entry.get("id") == widget_id:
+    """(section, index) of the first layout entry with this id. Entries may be bare strings."""
+    for section, entries in layout_of(config).items():
+        for i, entry in enumerate(entries):
+            if (entry if isinstance(entry, str) else entry.get("id") if isinstance(entry, dict) else None) == widget_id:
                 return section, i
     return None
 
 
 def own_entries(config):
     found = []
-    for section in SECTIONS:
-        for i, entry in enumerate(entries_of(config, section) or []):
-            if isinstance(entry, dict) and entry.get("id") == PLUGIN:
+    for section, entries in layout_of(config).items():
+        for i, entry in enumerate(entries):
+            if entry == PLUGIN or (isinstance(entry, dict) and entry.get("id") == PLUGIN):
                 found.append((section, i))
     return found
+
+
+def is_bare(entry):
+    return entry == PLUGIN or (isinstance(entry, dict) and entry.get("id") == PLUGIN and not entry.get("logo"))
 
 
 def check_logo(name):
@@ -121,13 +169,14 @@ def swapped(config):
     """The menu entry becomes an OmaDistro copy; the bare entry `omarchy plugin enable` adds is
     dropped when the menu is there, and becomes the copy when the bar has no menu."""
     out = json.loads(json.dumps(config))
+    layout = layout_of(out)
     at = find_entry(out, MENU)
-    bare = [p for p in own_entries(out) if not out["bar"]["layout"][p[0]][p[1]].get("logo")]
+    bare = [p for p in own_entries(out) if is_bare(layout[p[0]][p[1]])]
     if at:
         section, i = at
-        entry = out["bar"]["layout"][section][i]
-        extra = {k: v for k, v in entry.items() if k != "id"}
-        out["bar"]["layout"][section][i] = {"id": PLUGIN, "logo": DEFAULT_LOGO}
+        entry = layout[section][i]
+        extra = {k: v for k, v in entry.items() if k != "id"} if isinstance(entry, dict) else {}
+        layout[section][i] = {"id": PLUGIN, "logo": DEFAULT_LOGO}
         plugins = out.setdefault("plugins", [])
         existing = next((p for p in plugins if isinstance(p, dict) and p.get("id") == MENU), None)
         if existing is None:
@@ -136,34 +185,42 @@ def swapped(config):
             existing.update(extra)
         for section_name, index in sorted(bare, reverse=True):
             if (section_name, index) != (section, i):
-                del out["bar"]["layout"][section_name][index]
+                del layout[section_name][index]
     elif bare:
         section, i = bare[0]
-        out["bar"]["layout"][section][i] = {"id": PLUGIN, "logo": DEFAULT_LOGO}
+        layout[section][i] = {"id": PLUGIN, "logo": DEFAULT_LOGO}
     return out
 
 
 def setup(path):
-    folder = os.environ.get("XDG_RUNTIME_DIR") or os.path.dirname(path)
-    with open(os.path.join(folder, "omadistro-setup.lock"), "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        raw, config = read_config(path)
-        copies = [config["bar"]["layout"][s][i] for s, i in own_entries(config)] if "bar" in config else []
-        if not copies or any(c.get("logo") for c in copies):
-            print("already set up")
-            return
-        print("set up the menu logo" if save(path, raw, swapped(config)) else "already set up")
+    def change(config):
+        copies = [layout_of(config)[s][i] for s, i in own_entries(config)]
+        if not copies or any(isinstance(c, dict) and c.get("logo") for c in copies):
+            return None
+        return swapped(config)
+    print("set up the menu logo" if modify(path, change) else "already set up")
+
+
+def with_copies(path, apply):
+    """Apply `apply(entry)` to every OmaDistro copy; fail if there is none."""
+    def change(config):
+        copies = own_entries(config)
+        if not copies:
+            fail("no OmaDistro copy on the bar; enable the plugin first (omarchy plugin enable blackcode.omadistro)")
+        out = json.loads(json.dumps(config))
+        layout = layout_of(out)
+        for section, i in copies:
+            if not isinstance(layout[section][i], dict):
+                layout[section][i] = {"id": PLUGIN}
+            apply(layout[section][i])
+        return out
+    return modify(path, change)
 
 
 def set_logo(path, name):
     check_logo(name)
-    raw, config = read_config(path)
-    copies = own_entries(config)
-    if not copies:
-        fail("no OmaDistro copy on the bar; enable the plugin first (omarchy plugin enable blackcode.omadistro)")
-    for section, i in copies:
-        config["bar"]["layout"][section][i]["logo"] = name
-    print("logo: " + name if save(path, raw, config) else "logo already " + name)
+    changed = with_copies(path, lambda entry: entry.__setitem__("logo", name))
+    print("logo: " + name if changed else "logo already " + name)
 
 
 def set_size(path, value):
@@ -173,34 +230,43 @@ def set_size(path, value):
         fail(f"size must be a whole number from {SIZE_MIN} to {SIZE_MAX}, not {value!r}")
     if not SIZE_MIN <= percent <= SIZE_MAX:
         fail(f"size must be from {SIZE_MIN} to {SIZE_MAX} percent")
-    raw, config = read_config(path)
-    copies = own_entries(config)
-    if not copies:
-        fail("no OmaDistro copy on the bar; enable the plugin first (omarchy plugin enable blackcode.omadistro)")
-    for section, i in copies:
-        entry = config["bar"]["layout"][section][i]
+
+    def apply(entry):
         if percent == SIZE_DEFAULT:
             entry.pop("iconSize", None)
         else:
             entry["iconSize"] = percent
-    print(f"size: {percent}%" if save(path, raw, config) else f"size already {percent}%")
+    changed = with_copies(path, apply)
+    print(f"size: {percent}%" if changed else f"size already {percent}%")
 
 
 def unswap(path):
-    raw, config = read_config(path)
-    copies = own_entries(config)
-    if not copies:
-        print("nothing to unswap")
-        return
-    keep_menu = find_entry(config, MENU) is None
-    for n, (section, i) in enumerate(sorted(copies, reverse=True)):
-        entries = config["bar"]["layout"][section]
-        if keep_menu and n == len(copies) - 1:
-            entries[i] = {"id": MENU}
-        else:
-            del entries[i]
-    save(path, raw, config)
-    print("Omarchy's menu is back")
+    state = {"found": False}
+
+    def change(config):
+        copies = own_entries(config)
+        if not copies:
+            return None
+        state["found"] = True
+        out = json.loads(json.dumps(config))
+        layout = layout_of(out)
+        keep_menu = find_entry(out, MENU) is None
+        # The menu's settings went to plugins[] when the logo took its place: move them back.
+        plugins = out.get("plugins", [])
+        moved = next((p for p in plugins if isinstance(p, dict) and p.get("id") == MENU), None)
+        extra = {k: v for k, v in moved.items() if k != "id"} if moved else {}
+        for n, (section, i) in enumerate(sorted(copies, reverse=True)):
+            if keep_menu and n == len(copies) - 1:
+                layout[section][i] = {"id": MENU, **extra}
+                if moved is not None:
+                    plugins.remove(moved)
+                    if not plugins:
+                        out.pop("plugins", None)
+            else:
+                del layout[section][i]
+        return out
+    modify(path, change)
+    print("Omarchy's menu is back" if state["found"] else "nothing to unswap")
 
 
 def main(argv):

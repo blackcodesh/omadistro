@@ -79,7 +79,8 @@ class SetLogo(Case):
         self.write(self.bar([{"id": "blackcode.omadistro", "logo": "Omarchy"}]))
         self.assertEqual(run("set", "Arch", self.path).returncode, 0)
         self.assertEqual(self.read()["bar"]["layout"]["left"][0]["logo"], "Arch")
-        self.assertEqual(len(glob.glob(self.path + ".omadistro-*")), 1)
+        self.assertEqual(len(glob.glob(self.path + ".omadistro-2*")), 1)
+        self.assertTrue(os.path.exists(self.path + ".omadistro-original"))
 
     def test_unknown_logo_is_refused(self):
         self.write(self.bar([{"id": "blackcode.omadistro", "logo": "Omarchy"}]))
@@ -124,6 +125,81 @@ class Size(Case):
         self.write(self.bar([{"id": "blackcode.omadistro", "logo": "Omarchy", "iconSize": 130}]))
         run("unswap", self.path)
         self.assertEqual(self.read()["bar"]["layout"]["left"], [{"id": "omarchy.menu"}])
+
+
+class Hardening(Case):
+    def layout(self, **sections):
+        return {"bar": {"layout": {"left": [], "centerBegin": [], "center": [], "centerEnd": [], "right": [], "tray": [], **sections}}}
+
+    def test_menu_and_copy_in_any_of_the_six_sections(self):
+        for section in ("left", "centerBegin", "center", "centerEnd", "right", "tray"):
+            self.write(self.layout(**{section: [{"id": "omarchy.menu"}], "right": [{"id": "blackcode.omadistro"}]}
+                                   if section != "right" else {"right": [{"id": "omarchy.menu"}, {"id": "blackcode.omadistro"}]}))
+            self.assertEqual(run("setup", self.path).returncode, 0, section)
+            layout = self.read()["bar"]["layout"]
+            self.assertEqual(layout[section][0], {"id": "blackcode.omadistro", "logo": "Omarchy"}, section)
+            flat = [e["id"] if isinstance(e, dict) else e for v in layout.values() for e in v]
+            self.assertNotIn("omarchy.menu", flat, section)
+            self.assertEqual(flat.count("blackcode.omadistro"), 1, section)
+            self.assertEqual(run("set", "Arch", self.path).returncode, 0, section)
+            self.assertEqual(run("size", "120", self.path).returncode, 0, section)
+            self.assertEqual(run("unswap", self.path).returncode, 0, section)
+            self.assertEqual(self.read()["bar"]["layout"][section], [{"id": "omarchy.menu"}], section)
+
+    def test_bare_string_entries_are_understood_and_kept(self):
+        self.write(self.layout(left=["omarchy.menu", "omarchy.workspaces", "blackcode.omadistro"], right=["omarchy.clock"]))
+        self.assertEqual(run("setup", self.path).returncode, 0)
+        layout = self.read()["bar"]["layout"]
+        self.assertEqual(layout["left"], [{"id": "blackcode.omadistro", "logo": "Omarchy"}, "omarchy.workspaces"])
+        self.assertEqual(layout["right"], ["omarchy.clock"])
+
+    def test_a_symlinked_shell_json_stays_a_symlink(self):
+        target = os.path.join(self.dir, "dotfiles.json")
+        with open(target, "w") as f:
+            json.dump(self.layout(left=[{"id": "blackcode.omadistro", "logo": "Omarchy"}]), f)
+        os.symlink(target, self.path)
+        self.assertEqual(run("set", "Tux", self.path).returncode, 0)
+        self.assertTrue(os.path.islink(self.path))
+        self.assertEqual(json.load(open(target))["bar"]["layout"]["left"][0]["logo"], "Tux")
+
+    def test_backups_keep_the_original_and_the_newest_three(self):
+        self.write(self.layout(left=[{"id": "blackcode.omadistro", "logo": "Omarchy"}]))
+        original = open(self.path).read()
+        for n, name in enumerate(["Arch", "Debian", "Fedora", "Gentoo", "Kali", "Tux"]):
+            run("set", name, self.path)
+        self.assertEqual(len(glob.glob(self.path + ".omadistro-2*")), 3)
+        self.assertEqual(open(self.path + ".omadistro-original").read(), original)
+
+    def test_old_timestamped_backups_are_promoted_not_lost(self):
+        self.write(self.layout(left=[{"id": "blackcode.omadistro", "logo": "Omarchy"}]))
+        old = self.path + ".omadistro-20260101-000000"
+        with open(old, "w") as f:
+            f.write("the true original")
+        run("set", "Arch", self.path)
+        self.assertEqual(open(self.path + ".omadistro-original").read(), "the true original")
+
+    def test_unswap_moves_the_menu_settings_back(self):
+        self.write(self.layout(left=[{"id": "omarchy.menu", "extra": 1}, {"id": "blackcode.omadistro"}]))
+        run("setup", self.path)
+        self.assertIn({"id": "omarchy.menu", "extra": 1}, self.read()["plugins"])
+        run("unswap", self.path)
+        data = self.read()
+        self.assertEqual(data["bar"]["layout"]["left"], [{"id": "omarchy.menu", "extra": 1}])
+        self.assertNotIn("plugins", data)
+
+    def test_non_ascii_is_kept_as_is(self):
+        config = self.layout(left=[{"id": "blackcode.omadistro", "logo": "Omarchy"}])
+        config["note"] = "مرحبا"
+        self.write(config)
+        run("set", "Arch", self.path)
+        self.assertIn("مرحبا", open(self.path, encoding="utf-8").read())
+
+    def test_comments_give_a_clear_message(self):
+        with open(self.path, "w") as f:
+            f.write('{ // comment\n "bar": {} }')
+        out = run("set", "Arch", self.path)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("comments", out.stderr)
 
 
 class Unswap(Case):
