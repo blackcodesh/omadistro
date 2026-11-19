@@ -24,11 +24,13 @@ it and its tooltip work as before. That is all this plugin does.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/alshareedah22/omadistro --enable
+omarchy plugin add https://github.com/blackcodesh/omadistro --enable
 ```
 
 Nothing else to do: when enabled, it turns the menu on your bar into the logo copy, in the
 same place, with the Omarchy logo. No swap, no config.
+
+Also listed in the Omarchy plugin marketplace (https://plugins.omarchy.org): search for **OmaDistro**.
 
 ## Change the logo
 
