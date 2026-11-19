@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "id": "blackcode.omadistro",
+  "name": "OmaDistro",
+  "version": "1.0.0",
+  "author": "BlackCode",
+  "license": "MIT",
+  "description": "OmaDistro: change the logo of Omarchy's menu icon, top-left on the bar. 44 logos in their official colors, picked from a panel (right-click the logo) or with one command. The menu itself stays Omarchy's own; sets itself up when enabled",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Menu logo",
+    "description": "Omarchy's menu, with a logo you choose",
+    "category": "Appearance",
+    "allowMultiple": false,
+    "defaultSection": "left",
+    "defaults": {
+      "logo": "Omarchy",
+      "iconSize": 100
+    },
+    "schema": [
+      {
+        "key": "logo",
+        "type": "enum",
+        "label": "Logo",
+        "options": [
+          "Omarchy",
+          "Arch",
+          "Debian",
+          "Ubuntu",
+          "Fedora",
+          "Linux Mint",
+          "openSUSE",
+          "Manjaro",
+          "EndeavourOS",
+          "Gentoo",
+          "Void",
+          "NixOS",
+          "Alpine",
+          "Pop!_OS",
+          "elementary OS",
+          "Zorin OS",
+          "Kali",
+          "Rocky Linux",
+          "AlmaLinux",
+          "Red Hat",
+          "CentOS",
+          "Slackware",
+          "CachyOS",
+          "Garuda",
+          "Artix",
+          "Asahi",
+          "Nobara",
+          "KDE neon",
+          "Kubuntu",
+          "Xubuntu",
+          "Lubuntu",
+          "Ubuntu MATE",
+          "deepin",
+          "Solus",
+          "MX Linux",
+          "Qubes OS",
+          "Tails",
+          "Parrot",
+          "Raspberry Pi",
+          "SUSE",
+          "FreeBSD",
+          "OpenBSD",
+          "NetBSD",
+          "Tux"
+        ],
+        "defaultValue": "Omarchy",
+        "description": "The Omarchy logo, the Arch Linux logo, or another distro's logo (44 in all), each in its official color. Right-click the logo to pick one from a panel."
+      },
+      {
+        "key": "iconSize",
+        "type": "integer",
+        "label": "Logo size %",
+        "min": 60,
+        "max": 150,
+        "step": 5,
+        "defaultValue": 100,
+        "description": "Size of the logo, in percent of Omarchy's bar icon (100 is 16 px). Also on the picker (right-click the logo)."
+      }
+    ]
+  }
+}

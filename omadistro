@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+"""omadistro: change the logo of Omarchy's menu icon (top-left of the bar).
+
+  omadistro setup [shell.json]      what the plugin runs by itself when first enabled: turn the
+                                    menu widget on the bar into an OmaDistro copy (same place)
+  omadistro set <logo> [shell.json] change the logo, e.g. omadistro set Arch
+  omadistro size <60-150> [shell.json]  change the logo size, in percent of Omarchy's icon (100)
+  omadistro list                    print every logo name
+  omadistro unswap [shell.json]     put Omarchy's own menu widget back, in the same place
+
+The menu's own settings move to shell.json's plugins[] entry for omarchy.menu, where Omarchy
+keeps the settings of a widget that is not in the layout. Every write is atomic and keeps a
+timestamped copy of the previous file next to it."""
+import fcntl
+import json
+import os
+import sys
+import tempfile
+import time
+
+PLUGIN = "blackcode.omadistro"
+MENU = "omarchy.menu"
+DEFAULT_LOGO = "Omarchy"
+SIZE_MIN, SIZE_MAX, SIZE_DEFAULT = 60, 150, 100
+DEFAULT = os.path.expanduser("~/.config/omarchy/shell.json")
+SECTIONS = ("left", "center", "right")
+
+# Same order as Logos.js (tests/test_omadistro.py keeps the two in step).
+LOGOS = [
+    "Omarchy", "Arch", "Debian", "Ubuntu", "Fedora", "Linux Mint", "openSUSE", "Manjaro",
+    "EndeavourOS", "Gentoo", "Void", "NixOS", "Alpine", "Pop!_OS", "elementary OS", "Zorin OS",
+    "Kali", "Rocky Linux", "AlmaLinux", "Red Hat", "CentOS", "Slackware", "CachyOS", "Garuda",
+    "Artix", "Asahi", "Nobara", "KDE neon", "Kubuntu", "Xubuntu", "Lubuntu", "Ubuntu MATE",
+    "deepin", "Solus", "MX Linux", "Qubes OS", "Tails", "Parrot", "Raspberry Pi", "SUSE",
+    "FreeBSD", "OpenBSD", "NetBSD", "Tux",
+]
+
+
+def fail(message):
+    print("omadistro: " + message, file=sys.stderr)
+    sys.exit(1)
+
+
+def read_config(path):
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+        config = json.loads(raw)
+    except (OSError, ValueError) as e:
+        fail(f"cannot read {path}: {e}")
+    if not isinstance(config, dict):
+        fail("shell.json must hold a JSON object; nothing was changed")
+    bar = config.get("bar")
+    if isinstance(bar, dict) and "layout" in bar:
+        layout = bar["layout"]
+        if not isinstance(layout, dict):
+            fail("bar.layout must be an object; nothing was changed")
+        for section in SECTIONS:
+            if section in layout and not isinstance(layout[section], list):
+                fail(f"bar.layout.{section} must be a list; nothing was changed")
+    if "plugins" in config and not isinstance(config["plugins"], list):
+        fail("plugins must be a list; nothing was changed")
+    return raw, config
+
+
+def write_atomic(path, data, mode):
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".omadistro-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def save(path, raw, config):
+    """Write `config`, after keeping the previous file as shell.json.omadistro-<time>."""
+    text = (json.dumps(config, indent=2) + "\n").encode()
+    if text == raw:
+        return False
+    mode = os.stat(path).st_mode & 0o777
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    write_atomic(f"{path}.omadistro-{stamp}", raw, mode)
+    write_atomic(path, text, mode)
+    return True
+
+
+def entries_of(config, section):
+    layout = config.get("bar", {}).get("layout", {}) if isinstance(config.get("bar"), dict) else {}
+    value = layout.get(section)
+    return value if isinstance(value, list) else None
+
+
+def find_entry(config, widget_id):
+    for section in SECTIONS:
+        entries = entries_of(config, section)
+        for i, entry in enumerate(entries or []):
+            if isinstance(entry, dict) and entry.get("id") == widget_id:
+                return section, i
+    return None
+
+
+def own_entries(config):
+    found = []
+    for section in SECTIONS:
+        for i, entry in enumerate(entries_of(config, section) or []):
+            if isinstance(entry, dict) and entry.get("id") == PLUGIN:
+                found.append((section, i))
+    return found
+
+
+def check_logo(name):
+    if name not in LOGOS:
+        fail(f"unknown logo {name!r}; run `omadistro list` for the names")
+
+
+def swapped(config):
+    """The menu entry becomes an OmaDistro copy; the bare entry `omarchy plugin enable` adds is
+    dropped when the menu is there, and becomes the copy when the bar has no menu."""
+    out = json.loads(json.dumps(config))
+    at = find_entry(out, MENU)
+    bare = [p for p in own_entries(out) if not out["bar"]["layout"][p[0]][p[1]].get("logo")]
+    if at:
+        section, i = at
+        entry = out["bar"]["layout"][section][i]
+        extra = {k: v for k, v in entry.items() if k != "id"}
+        out["bar"]["layout"][section][i] = {"id": PLUGIN, "logo": DEFAULT_LOGO}
+        plugins = out.setdefault("plugins", [])
+        existing = next((p for p in plugins if isinstance(p, dict) and p.get("id") == MENU), None)
+        if existing is None:
+            plugins.append({"id": MENU, **extra})
+        else:
+            existing.update(extra)
+        for section_name, index in sorted(bare, reverse=True):
+            if (section_name, index) != (section, i):
+                del out["bar"]["layout"][section_name][index]
+    elif bare:
+        section, i = bare[0]
+        out["bar"]["layout"][section][i] = {"id": PLUGIN, "logo": DEFAULT_LOGO}
+    return out
+
+
+def setup(path):
+    folder = os.environ.get("XDG_RUNTIME_DIR") or os.path.dirname(path)
+    with open(os.path.join(folder, "omadistro-setup.lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        raw, config = read_config(path)
+        copies = [config["bar"]["layout"][s][i] for s, i in own_entries(config)] if "bar" in config else []
+        if not copies or any(c.get("logo") for c in copies):
+            print("already set up")
+            return
+        print("set up the menu logo" if save(path, raw, swapped(config)) else "already set up")
+
+
+def set_logo(path, name):
+    check_logo(name)
+    raw, config = read_config(path)
+    copies = own_entries(config)
+    if not copies:
+        fail("no OmaDistro copy on the bar; enable the plugin first (omarchy plugin enable blackcode.omadistro)")
+    for section, i in copies:
+        config["bar"]["layout"][section][i]["logo"] = name
+    print("logo: " + name if save(path, raw, config) else "logo already " + name)
+
+
+def set_size(path, value):
+    try:
+        percent = int(value)
+    except ValueError:
+        fail(f"size must be a whole number from {SIZE_MIN} to {SIZE_MAX}, not {value!r}")
+    if not SIZE_MIN <= percent <= SIZE_MAX:
+        fail(f"size must be from {SIZE_MIN} to {SIZE_MAX} percent")
+    raw, config = read_config(path)
+    copies = own_entries(config)
+    if not copies:
+        fail("no OmaDistro copy on the bar; enable the plugin first (omarchy plugin enable blackcode.omadistro)")
+    for section, i in copies:
+        entry = config["bar"]["layout"][section][i]
+        if percent == SIZE_DEFAULT:
+            entry.pop("iconSize", None)
+        else:
+            entry["iconSize"] = percent
+    print(f"size: {percent}%" if save(path, raw, config) else f"size already {percent}%")
+
+
+def unswap(path):
+    raw, config = read_config(path)
+    copies = own_entries(config)
+    if not copies:
+        print("nothing to unswap")
+        return
+    keep_menu = find_entry(config, MENU) is None
+    for n, (section, i) in enumerate(sorted(copies, reverse=True)):
+        entries = config["bar"]["layout"][section]
+        if keep_menu and n == len(copies) - 1:
+            entries[i] = {"id": MENU}
+        else:
+            del entries[i]
+    save(path, raw, config)
+    print("Omarchy's menu is back")
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("-h", "--help", "help"):
+        print(__doc__)
+        return
+    command = argv[1]
+    if command == "list":
+        print("\n".join(LOGOS))
+    elif command == "setup":
+        setup(argv[2] if len(argv) > 2 else DEFAULT)
+    elif command == "set":
+        if len(argv) < 3:
+            fail("usage: omadistro set <logo> [shell.json]")
+        set_logo(argv[3] if len(argv) > 3 else DEFAULT, argv[2])
+    elif command == "size":
+        if len(argv) < 3:
+            fail("usage: omadistro size <60-150> [shell.json]")
+        set_size(argv[3] if len(argv) > 3 else DEFAULT, argv[2])
+    elif command == "unswap":
+        unswap(argv[2] if len(argv) > 2 else DEFAULT)
+    else:
+        fail(f"unknown command {command!r}; try omadistro --help")
+
+
+if __name__ == "__main__":
+    main(sys.argv)
