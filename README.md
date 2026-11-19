@@ -1,6 +1,6 @@
 # OmaDistro: change the Omarchy logo on your bar
 
-![OmaDistro: change the Omarchy logo on your bar](poster/13-alshareedah22-omadistro-detail.webp)
+![OmaDistro: change the Omarchy logo on your bar](poster/13-blackcodesh-omadistro-detail.webp)
 
 The icon at the top-left of Omarchy's bar is the menu button. OmaDistro lets you swap its
 logo in one click: the Omarchy logo, the Arch Linux logo, or one of 42 other distro logos,
