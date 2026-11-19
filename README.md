@@ -100,3 +100,7 @@ They run in a throwaway directory and never touch your shell.json.
 | `poster/`, `preview.png` | Cover image |
 
 MIT licensed.
+
+## License
+
+MIT, see [LICENSE](LICENSE), for the code. The logo drawings keep the licenses of their sources, listed in [`icons/LOGOS.md`](icons/LOGOS.md); the logos are trademarks of their projects and are shown to mark your bar, not to imply endorsement.
