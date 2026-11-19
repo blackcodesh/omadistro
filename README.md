@@ -1,5 +1,7 @@
 # OmaDistro: change the Omarchy logo on your bar
 
+![OmaDistro: change the Omarchy logo on your bar](poster/13-alshareedah22-omadistro-detail.webp)
+
 The icon at the top-left of Omarchy's bar is the menu button. OmaDistro lets you swap its
 logo in one click: the Omarchy logo, the Arch Linux logo, or one of 42 other distro logos,
 each in its official color, at the size you like. The menu itself stays Omarchy's own, so clicking it, scrolling on
@@ -77,5 +79,6 @@ They run in a throwaway directory and never touch your shell.json.
 | `Logos.js` | The 44 logos |
 | `omadistro` | Command-line tool: `setup`, `set`, `size`, `list`, `unswap` |
 | `icons/` | The logo drawings |
+| `poster/`, `preview.png` | Cover image |
 
 MIT licensed.
